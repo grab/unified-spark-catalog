@@ -1,0 +1,17 @@
+# Security configuration for Hadoop/Spark tests with Java 17+
+#
+# This file provides overrides for security settings to allow
+# Hadoop and Spark to work properly with newer Java versions
+
+# Allow access to subject for authentication
+policy.allowSystemProperty.javax.security.auth.useSubjectCredsOnly=true
+
+# Disable certain security checks that interfere with Hadoop
+security.manager=
+
+# Enable compatibility for Subject.getSubject()
+jdk.security.auth.subject.doPrivileged=true
+
+# Additional Hadoop compatibility settings
+hadoop.security.authentication=simple
+hadoop.security.authorization=false
