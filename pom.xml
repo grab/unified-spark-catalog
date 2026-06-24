@@ -5,9 +5,13 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.grab</groupId>
-  <artifactId>spark-catalog</artifactId>
+  <!-- artifactId carries the Spark + Scala version, e.g. spark-catalog-3.5_2.12,
+       matching the Spark ecosystem convention (iceberg-spark-runtime-3.5_2.12).
+       Resolved per build profile via spark.version.suffix; flatten-maven-plugin
+       writes the resolved value into the published POM. -->
+  <artifactId>spark-catalog-${spark.version.suffix}_2.12</artifactId>
   <version>1.3.1</version>
-  <name>spark-catalog</name>
+  <name>spark-catalog-${spark.version.suffix}_2.12</name>
   <description>Unified Spark catalog for seamless access to multiple table formats</description>
   <url>https://github.com/grab/spark-catalog</url>
   <scm>
@@ -15,6 +19,21 @@
     <developerConnection>scm:git:https://github.com/grab/spark-catalog.git</developerConnection>
     <url>https://github.com/grab/spark-catalog</url>
   </scm>
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <developers>
+    <developer>
+      <id>grab</id>
+      <name>Grab</name>
+      <organization>Grab</organization>
+      <organizationUrl>https://github.com/grab</organizationUrl>
+    </developer>
+  </developers>
   <repositories>
     <repository>
       <id>central</id>
@@ -27,76 +46,37 @@
     <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
     
-    <!-- Default to Spark 3.5 -->
+    <!-- Default to Spark 3.5. Delta defaults live here too (not only in the
+         spark-3.5 profile) so the build still resolves when another profile
+         such as `release` deactivates the activeByDefault spark-3.5 profile. -->
     <spark.version>3.5.2</spark.version>
     <spark.version.suffix>3.5</spark.version.suffix>
+    <delta.version>3.3.0</delta.version>
+    <delta.artifact>delta-spark_2.12</delta.artifact>
     
     <!-- Core library versions -->
     <scala.version>2.12.18</scala.version>
-    <scala.binary.version>2.12</scala.binary.version>
     <iceberg.version>1.8.0</iceberg.version>
     <hudi.version>1.0.1</hudi.version>
     <jackson.version>2.15.2</jackson.version>
     
     <!-- Test library versions -->
     <junit.version>4.13.2</junit.version>
-    <scalatest.version>3.2.17</scalatest.version>
-    
+
     <!-- Plugin versions -->
     <scala.maven.plugin.version>4.8.1</scala.maven.plugin.version>
-    <scalatest.maven.plugin.version>2.2.0</scalatest.maven.plugin.version>
     <surefire.plugin.version>3.0.0-M7</surefire.plugin.version>
+    <flatten.plugin.version>1.7.0</flatten.plugin.version>
+    <source.plugin.version>3.4.0</source.plugin.version>
+    <javadoc.plugin.version>3.12.0</javadoc.plugin.version>
+    <gpg.plugin.version>3.2.8</gpg.plugin.version>
+    <central.plugin.version>0.11.0</central.plugin.version>
     
     <!-- Common JVM arguments for tests -->
-    <test.jvm.args>--add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/javax.security.auth=ALL-UNNAMED --add-opens=java.base/javax.security.auth.login=ALL-UNNAMED --add-opens=java.base/javax.security.auth.spi=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED --add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Dhadoop.home.dir=/tmp -Dhadoop.root.logger=OFF,console -Djavax.security.auth.useSubjectCredsOnly=false -Djava.security.krb5.realm= -Djava.security.krb5.kdc= -Djdk.security.auth.subject.doPrivileged=true</test.jvm.args>
+    <test.jvm.args>--add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/javax.security.auth=ALL-UNNAMED --add-opens=java.base/javax.security.auth.login=ALL-UNNAMED --add-opens=java.base/javax.security.auth.spi=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED --add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Dhadoop.home.dir=/tmp -Dhadoop.root.logger=OFF,console -Djavax.security.auth.useSubjectCredsOnly=false -Djava.security.krb5.realm= -Djava.security.krb5.kdc= -Djdk.security.auth.subject.doPrivileged=true</test.jvm.args>
   </properties>
 
   <profiles>
-    <profile>
-      <id>spark-3.3</id>
-      <properties>
-        <spark.version>3.3.4</spark.version>
-        <spark.version.suffix>3.3</spark.version.suffix>
-        <delta.version>2.3.0</delta.version>
-        <delta.artifact>delta-core_2.12</delta.artifact>
-      </properties>
-      <build>
-        <plugins>
-          <plugin>
-            <groupId>net.alchim31.maven</groupId>
-            <artifactId>scala-maven-plugin</artifactId>
-            <executions>
-              <execution>
-                <id>scala-compile-first</id>
-                <phase>process-resources</phase>
-                <goals>
-                  <goal>add-source</goal>
-                  <goal>compile</goal>
-                </goals>
-                <configuration>
-                  <excludes>
-                    <exclude>**/GrabSparkConnectService.scala</exclude>
-                  </excludes>
-                </configuration>
-              </execution>
-              <execution>
-                <id>scala-test-compile</id>
-                <phase>process-test-resources</phase>
-                <goals>
-                  <goal>testCompile</goal>
-                </goals>
-                <configuration>
-                  <excludes>
-                    <exclude>**/GrabSparkConnectServiceTest.scala</exclude>
-                  </excludes>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
-    </profile>
-    
     <profile>
       <id>spark-3.4</id>
       <properties>
@@ -105,43 +85,18 @@
         <delta.version>2.4.0</delta.version>
         <delta.artifact>delta-core_2.12</delta.artifact>
       </properties>
-      <build>
-        <plugins>
-          <plugin>
-            <groupId>net.alchim31.maven</groupId>
-            <artifactId>scala-maven-plugin</artifactId>
-            <executions>
-              <execution>
-                <id>scala-compile-first</id>
-                <phase>process-resources</phase>
-                <goals>
-                  <goal>add-source</goal>
-                  <goal>compile</goal>
-                </goals>
-                <configuration>
-                  <excludes>
-                    <exclude>**/GrabSparkConnectService.scala</exclude>
-                  </excludes>
-                </configuration>
-              </execution>
-              <execution>
-                <id>scala-test-compile</id>
-                <phase>process-test-resources</phase>
-                <goals>
-                  <goal>testCompile</goal>
-                </goals>
-                <configuration>
-                  <excludes>
-                    <exclude>**/GrabSparkConnectServiceTest.scala</exclude>
-                  </excludes>
-                </configuration>
-              </execution>
-            </executions>
-          </plugin>
-        </plugins>
-      </build>
+      <dependencies>
+        <!-- Spark 3.5 bundles scala-collection-compat transitively; Spark 3.4 does not,
+             but Iceberg's extensions require scala.jdk.CollectionConverters from it. -->
+        <dependency>
+          <groupId>org.scala-lang.modules</groupId>
+          <artifactId>scala-collection-compat_2.12</artifactId>
+          <version>2.7.0</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
     </profile>
-    
+
     <profile>
       <id>spark-3.5</id>
       <activation>
@@ -151,14 +106,86 @@
         <delta.version>3.3.0</delta.version>
         <delta.artifact>delta-spark_2.12</delta.artifact>
       </properties>
-      <dependencies>
-        <!-- Spark Connect (only available in Spark 3.5+) -->
-        <dependency>
-          <groupId>org.apache.spark</groupId>
-          <artifactId>spark-connect_2.12</artifactId>
-          <version>${spark.version}</version>
-        </dependency>
-      </dependencies>
+    </profile>
+
+    <!-- Activate with `-Prelease` to publish to Maven Central via the Sonatype
+         Central Portal. Requires:
+           - GPG key available + MAVEN_GPG_PASSPHRASE for signing
+           - settings.xml server id `central` with the Central Portal user token
+         Run once per Spark profile, e.g.:
+           mvn -Prelease deploy                 # Spark 3.5 (default)
+           mvn -Prelease -Pspark-3.4 deploy     # Spark 3.4 -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>${source.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals>
+                  <goal>jar-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>${javadoc.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <!-- Spark/Iceberg/Hudi sources trip strict doclint; don't fail the build on it. -->
+              <doclint>none</doclint>
+            </configuration>
+          </plugin>
+
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>${gpg.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <gpgArguments>
+                <arg>--pinentry-mode</arg>
+                <arg>loopback</arg>
+              </gpgArguments>
+            </configuration>
+          </plugin>
+
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>${central.plugin.version}</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <!-- Validate + stage automatically; set to true to also release without
+                   a manual click in the Central Portal UI. -->
+              <autoPublish>false</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 
@@ -186,6 +213,16 @@
       <scope>provided</scope>
     </dependency>
     
+    <!-- Pin jackson-core to match Spark/Iceberg (jackson-databind and -annotations
+         are already 2.15.2 transitively, but Hudi drags in jackson-core 2.14.2
+         which is missing StreamReadConstraints). -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-core</artifactId>
+      <version>${jackson.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
     <!-- Data Format Dependencies -->
     <dependency>
       <groupId>org.apache.iceberg</groupId>
@@ -215,40 +252,11 @@
       <version>${scala.version}</version>
     </dependency>
     
-    <!-- gRPC Dependencies (required for SparkConnectService.server) -->
-    <dependency>
-      <groupId>io.grpc</groupId>
-      <artifactId>grpc-core</artifactId>
-      <version>1.56.0</version>
-      <scope>provided</scope>
-    </dependency>
-    
-    <dependency>
-      <groupId>io.grpc</groupId>
-      <artifactId>grpc-netty-shaded</artifactId>
-      <version>1.56.0</version>
-      <scope>provided</scope>
-    </dependency>
-    
-    <dependency>
-      <groupId>io.grpc</groupId>
-      <artifactId>grpc-stub</artifactId>
-      <version>1.56.0</version>
-      <scope>provided</scope>
-    </dependency>
-
     <!-- Test Dependencies -->
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
       <version>${junit.version}</version>
-      <scope>test</scope>
-    </dependency>
-    
-    <dependency>
-      <groupId>org.scalatest</groupId>
-      <artifactId>scalatest_${scala.binary.version}</artifactId>
-      <version>${scalatest.version}</version>
       <scope>test</scope>
     </dependency>
     
@@ -283,14 +291,6 @@
             <argLine>${test.jvm.args} -Dspark.master=local[1] -Dspark.sql.catalogImplementation=in-memory -Dspark.ui.enabled=false -Dspark.sql.shuffle.partitions=1 -Djavax.security.auth.useSubjectCredsOnly=false -Dhadoop.home.dir=/tmp</argLine>
             <useFile>false</useFile>
             <trimStackTrace>false</trimStackTrace>
-            <!-- Exclude Hadoop/Hive-dependent tests that fail with Java 17+ -->
-            <excludes>
-              <exclude>**/GrabSessionCatalogHiveMetastoreOverrideTest.java</exclude>
-              <exclude>**/SimpleCatalogTest.java</exclude>
-              <exclude>**/GrabSessionCatalogNonDefaultTest.java</exclude>
-              <exclude>**/GrabSessionCatalogTest.java</exclude>
-              <exclude>**/SQLQueryTest.java</exclude>
-            </excludes>
           </configuration>
         </plugin>
         
@@ -308,11 +308,6 @@
           <version>${scala.maven.plugin.version}</version>
         </plugin>
         
-        <plugin>
-          <groupId>org.scalatest</groupId>
-          <artifactId>scalatest-maven-plugin</artifactId>
-          <version>${scalatest.maven.plugin.version}</version>
-        </plugin>
       </plugins>
     </pluginManagement>
     
@@ -341,27 +336,34 @@
           <scalaVersion>${scala.version}</scalaVersion>
         </configuration>
       </plugin>
-      
+
+      <!-- Resolve ${spark.version.suffix} in the published POM's coordinates and
+           strip build-time-only sections, so consumers get clean GAV metadata. -->
       <plugin>
-        <groupId>org.scalatest</groupId>
-        <artifactId>scalatest-maven-plugin</artifactId>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>flatten-maven-plugin</artifactId>
+        <version>${flatten.plugin.version}</version>
         <configuration>
-          <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
-          <junitxml>.</junitxml>
-          <filereports>WDF TestSuite.txt</filereports>
-          <argLine>${test.jvm.args} -Dspark.master=local[1] -Dspark.sql.catalogImplementation=in-memory -Dspark.ui.enabled=false -Dspark.sql.shuffle.partitions=1</argLine>
-          <!-- Skip ScalaTest that fails with Java 17+ by default -->
-          <skipTests>true</skipTests>
+          <flattenMode>oss</flattenMode>
         </configuration>
         <executions>
           <execution>
-            <id>test</id>
+            <id>flatten</id>
+            <phase>process-resources</phase>
             <goals>
-              <goal>test</goal>
+              <goal>flatten</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>flatten-clean</id>
+            <phase>clean</phase>
+            <goals>
+              <goal>clean</goal>
             </goals>
           </execution>
         </executions>
       </plugin>
+
     </plugins>
   </build>
 </project>

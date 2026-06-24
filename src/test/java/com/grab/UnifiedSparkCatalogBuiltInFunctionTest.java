@@ -13,15 +13,15 @@ import static org.junit.Assert.*;
 import java.util.HashMap;
 
 /**
- * Test to verify UnifiedSessionCatalog handles BuiltInFunctionCatalog without ClassCastException
+ * Test to verify UnifiedSparkCatalog handles BuiltInFunctionCatalog without ClassCastException
  */
-public class UnifiedSessionCatalogBuiltInFunctionTest {
+public class UnifiedSparkCatalogBuiltInFunctionTest {
 
-    private UnifiedSessionCatalog catalog;
+    private UnifiedSparkCatalog catalog;
 
     @Before
     public void setup() {
-        catalog = new UnifiedSessionCatalog();
+        catalog = new UnifiedSparkCatalog();
         catalog.initialize("test_catalog", new CaseInsensitiveStringMap(new HashMap<>()));
     }
 

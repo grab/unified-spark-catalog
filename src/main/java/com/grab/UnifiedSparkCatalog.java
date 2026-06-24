@@ -1,14 +1,10 @@
 package com.grab;
 
 import java.util.LinkedHashMap;
-import java.util.HashMap;
 import java.util.Map;
-import java.util.Objects;
 import java.util.function.Function;
 import java.io.File;
 import scala.Option;
-import scala.Tuple2;
-import scala.collection.Iterator;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -36,30 +32,17 @@ import org.apache.spark.sql.connector.catalog.TableChange;
 import org.apache.spark.sql.connector.catalog.functions.UnboundFunction;
 import org.apache.spark.sql.connector.expressions.Transform;
 import org.apache.spark.sql.types.StructType;
-import org.apache.spark.sql.internal.SessionState;
-import org.apache.spark.sql.internal.SharedState;
-import org.apache.spark.sql.catalyst.catalog.SessionCatalog;
-import org.apache.spark.sql.internal.SQLConf;
-import org.apache.spark.sql.execution.datasources.v2.V2SessionCatalog;
-import org.apache.spark.sql.catalyst.catalog.ExternalCatalogWithListener;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
-import org.apache.spark.sql.SparkSession;
-import org.apache.spark.sql.execution.datasources.DataSource;
-import org.apache.spark.sql.hive.HiveExternalCatalog;
-import org.apache.spark.sql.catalyst.catalog.ExternalCatalog;
-import org.apache.spark.sql.internal.SparkUDFExpressionBuilder;
-import org.apache.spark.SparkConf;
-import org.apache.hadoop.conf.Configuration;
 
-public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & SupportsNamespaces & StagingTableCatalog>
+public class UnifiedSparkCatalog <T extends TableCatalog & FunctionCatalog & SupportsNamespaces & StagingTableCatalog>
         implements CatalogExtension, StagingTableCatalog, SupportsNamespaces, FunctionCatalog {
     private String catalogName;
     private TableCatalog icebergCatalog;
     private TableCatalog deltaCatalog;
     private TableCatalog hudiCatalog;
-    public T sessionCatalog;
+    T sessionCatalog;
     private CatalogPlugin rawDelegate; // Store the raw delegate for function catalog operations
-    private Logger logger = LogManager.getLogger(UnifiedSessionCatalog.class);
+    private static final Logger logger = LogManager.getLogger(UnifiedSparkCatalog.class);
     private LinkedHashMap<String, TableCatalog> catalogsByProvider;
     private CaseInsensitiveStringMap initializationOptions;
     private volatile boolean catalogsInitialized = false;
@@ -137,33 +120,20 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
             initializeSessionCatalog();
         }
 
-        // Check if `hive_metastore_override` exist
-        if (initializationOptions.containsKey("hive_metastore_override")) {
-            overrideSessionCatalog(initializationOptions.get("hive_metastore_override"));
-
-            // Initialise Iceberg Catalog with hive metastore override
-            Map<String, String> mutableOptions = new HashMap<>(initializationOptions);
-            mutableOptions.put("uri", initializationOptions.get("hive_metastore_override")); // For Iceberg
-            CaseInsensitiveStringMap icebergInitializationOptions = new CaseInsensitiveStringMap(mutableOptions);
-            this.icebergCatalog = initializeCatalog("iceberg", "org.apache.iceberg.spark.SparkCatalog", icebergInitializationOptions);
+        // Check for existing Iceberg catalog
+        if (catalogExistsInManager("iceberg_catalog")) {
+            this.icebergCatalog = getExistingCatalog("iceberg_catalog");
+            logger.info("Using existing iceberg_catalog from catalog manager");
         } else {
-            // Catalog Initialization when there is no hive_metastore_override (operations to PRD Catalogs)
+            this.icebergCatalog = initializeCatalog("iceberg", "org.apache.iceberg.spark.SparkCatalog", initializationOptions);
+        }
 
-            // Check for existing Iceberg catalog
-            if (catalogExistsInManager("iceberg_catalog")) {
-                this.icebergCatalog = getExistingCatalog("iceberg_catalog");
-                logger.info("Using existing iceberg_catalog from catalog manager");
-            } else {
-                this.icebergCatalog = initializeCatalog("iceberg", "org.apache.iceberg.spark.SparkCatalog", initializationOptions);
-            }
-
-            // Check for existing Delta catalog
-            if (catalogExistsInManager("delta_catalog")) {
-                this.deltaCatalog = getExistingCatalog("delta_catalog");
-                logger.info("Using existing delta_catalog from catalog manager");
-            } else {
-                this.deltaCatalog = initializeCatalog("delta", "org.apache.spark.sql.delta.catalog.DeltaCatalog", initializationOptions);
-            }
+        // Check for existing Delta catalog
+        if (catalogExistsInManager("delta_catalog")) {
+            this.deltaCatalog = getExistingCatalog("delta_catalog");
+            logger.info("Using existing delta_catalog from catalog manager");
+        } else {
+            this.deltaCatalog = initializeCatalog("delta", "org.apache.spark.sql.delta.catalog.DeltaCatalog", initializationOptions);
         }
 
         // Check for existing Hudi catalog
@@ -199,36 +169,6 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
         catalogsInitialized = true;
 
 
-    }
-
-    public void overrideSessionCatalog(String overrideHiveMetastoreURI) {
-        SessionState sessionState = SparkSession.active().sessionState();
-        SharedState sharedState = SparkSession.active().sharedState();
-        SQLConf sqlConf = SparkSession.active().sessionState().conf();
-        SparkConf sparkConf = SparkSession.active().sparkContext().conf();
-        Configuration hadoopConf = SparkSession.active().sparkContext().hadoopConfiguration();
-        for (Tuple2<String, String> entry : sparkConf.getAll()) {
-            if (entry._1().contains("hive.metastore.uris")) {
-                sparkConf.remove(entry._1());
-            }
-        }
-        hadoopConf.set("hive.metastore.uris", overrideHiveMetastoreURI);
-        ExternalCatalog externalCatalog = (ExternalCatalog) new HiveExternalCatalog(sparkConf, hadoopConf);
-        SessionCatalog sparkSessionCatalog = new SessionCatalog(
-            () -> externalCatalog,
-            () -> sharedState.globalTempViewManager(),
-            sessionState.functionRegistry(),
-            sessionState.tableFunctionRegistry(),
-            sessionState.newHadoopConf(),
-            sessionState.sqlParser(),
-            sessionState.resourceLoader(),
-            new SparkUDFExpressionBuilder(),
-            sqlConf.tableRelationCacheSize(),
-            sqlConf.metadataCacheTTL(),
-            sqlConf.defaultDatabase());
-        V2SessionCatalog v2SessionCatalog = new V2SessionCatalog(sparkSessionCatalog);
-        this.sessionCatalog = (T) v2SessionCatalog;
-        logger.info("{}: Overriding hive.metastore.uris to {}", catalogName, overrideHiveMetastoreURI);
     }
 
     @Override
@@ -277,12 +217,12 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
     @Override
     public Table loadTable(Identifier ident, String version) throws NoSuchTableException {
         ensureCatalogsInitialized();
-        Table table = this.deltaCatalog.loadTable(ident);
-        if (TableTypeDetector.isDeltaLakeTable(table)) {
+        Table table = this.sessionCatalog.loadTable(ident);
+        if (TableTypeDetector.isDeltaLakeTable(table) && deltaCatalog != null) {
             return deltaCatalog.loadTable(ident, version);
-        } else if (TableTypeDetector.isIcebergTable(table)) {
+        } else if (TableTypeDetector.isIcebergTable(table) && icebergCatalog != null) {
             return icebergCatalog.loadTable(ident, version);
-        } else if (TableTypeDetector.isHudiTable(table)) {
+        } else if (TableTypeDetector.isHudiTable(table) && hudiCatalog != null) {
             return hudiCatalog.loadTable(ident, version);
         }
         return table;
@@ -292,11 +232,11 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
     public Table loadTable(Identifier ident, long timestamp) throws NoSuchTableException {
         ensureCatalogsInitialized();
         Table table = this.sessionCatalog.loadTable(ident);
-        if (TableTypeDetector.isDeltaLakeTable(table)) {
+        if (TableTypeDetector.isDeltaLakeTable(table) && deltaCatalog != null) {
             return deltaCatalog.loadTable(ident, timestamp);
-        } else if (TableTypeDetector.isIcebergTable(table)) {
+        } else if (TableTypeDetector.isIcebergTable(table) && icebergCatalog != null) {
             return icebergCatalog.loadTable(ident, timestamp);
-        } else if (TableTypeDetector.isHudiTable(table)) {
+        } else if (TableTypeDetector.isHudiTable(table) && hudiCatalog != null) {
             return hudiCatalog.loadTable(ident, timestamp);
         }
         return table;
@@ -314,30 +254,27 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
 
         try {
             Table table = this.sessionCatalog.loadTable(ident);
-            if (TableTypeDetector.isIcebergTable(table)) {
+            if (TableTypeDetector.isIcebergTable(table) && icebergCatalog != null) {
                 return icebergCatalog.loadTable(ident);
-            } else if (TableTypeDetector.isDeltaLakeTable(table)) {
+            } else if (TableTypeDetector.isDeltaLakeTable(table) && deltaCatalog != null) {
                 return deltaCatalog.loadTable(ident);
-            } else if (TableTypeDetector.isHudiTable(table)) {
+            } else if (TableTypeDetector.isHudiTable(table) && hudiCatalog != null) {
                 return hudiCatalog.loadTable(ident);
             } else {
                 return table;
             }
         } catch (NoSuchTableException e) {
             if (TableTypeDetector.isDeltaLakePath(ident)) {
-                return deltaCatalog.loadTable(ident);
+                return deltaCatalog != null ? deltaCatalog.loadTable(ident) : this.sessionCatalog.loadTable(ident);
             }
             throw e;
         } catch (Exception e) {
             if (e instanceof NoSuchDatabaseException && TableTypeDetector.isDeltaLakePath(ident)) {
-                return deltaCatalog.loadTable(ident);
+                return deltaCatalog != null ? deltaCatalog.loadTable(ident) : this.sessionCatalog.loadTable(ident);
             }
             if (e instanceof AnalysisException &&
-            (e.getMessage().contains("REQUIRES_SINGLE_PART_NAMESPACE") ||
-            e.getMessage().contains("requires a single-part namespac")) ) {
-                // In spark 3.3, the error message does not contain "REQUIRES_SINGLE_PART_NAMESPACE"
-                // but contains "requires a single-part namespace"
-                logger.info("Table {} could be an iceberg table with branch or tag, loading from iceberg catalog", ident);
+            e.getMessage().contains("REQUIRES_SINGLE_PART_NAMESPACE") && icebergCatalog != null) {
+                logger.info("Detected iceberg table with branch or tag qualifier for {}, loading from iceberg catalog", ident);
                 return icebergCatalog.loadTable(ident);
             }
             logger.error("Error loading table: {}", e.getClass());
@@ -380,7 +317,8 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
                 String location = properties.get("location");
                 if (location != null) {
                     File locationFile = new File(location);
-                    if (locationFile.list() != null && locationFile.list().length > 0) {
+                    String[] entries = locationFile.list();
+                    if (entries != null && entries.length > 0) {
                         throw new TableAlreadyExistsException("Location is not empty: " + location, Option.empty());
                     }
                 }
@@ -457,8 +395,6 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
             logger.error("Error determining table type for drop: {}", e.getMessage());
             // Fallback to trying all catalogs
             return tryOperationOnAllCatalogs(catalog -> catalog.dropTable(ident));
-        } finally {
-            this.sessionCatalog.dropTable(ident);
         }
     }
 
@@ -499,8 +435,6 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
             logger.error("Error determining table type for purge: {}", e.getMessage());
             // Fallback to trying all catalogs
             return tryOperationOnAllCatalogs(catalog -> catalog.purgeTable(ident));
-        } finally {
-            this.sessionCatalog.purgeTable(ident);
         }
     }
 
@@ -681,8 +615,7 @@ public class UnifiedSessionCatalog <T extends TableCatalog & FunctionCatalog & S
             return this.sessionCatalog.loadFunction(ident);
         } catch (AnalysisException e) {
             // Handle multi-part namespace (e.g., iceberg with branch/tag)
-            if (e.getMessage().contains("REQUIRES_SINGLE_PART_NAMESPACE") ||
-                e.getMessage().contains("requires a single-part namespac")) {
+            if (e.getMessage().contains("REQUIRES_SINGLE_PART_NAMESPACE")) {
                 logger.info("Function {} requires multi-part namespace, loading from iceberg catalog", ident);
                 if (icebergCatalog instanceof FunctionCatalog) {
                     return ((FunctionCatalog) icebergCatalog).loadFunction(ident);

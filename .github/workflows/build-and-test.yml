@@ -1,0 +1,73 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        spark-version: ['3.4', '3.5']
+        java-version: ['17']
+
+    name: Build and Test (Spark ${{ matrix.spark-version }}, Java ${{ matrix.java-version }})
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up JDK ${{ matrix.java-version }}
+      uses: actions/setup-java@v4
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Build with Maven (Spark ${{ matrix.spark-version }})
+      run: |
+        if [ "${{ matrix.spark-version }}" = "3.4" ]; then
+          mvn clean package -Pspark-3.4 -DskipTests
+        else
+          mvn clean package -DskipTests
+        fi
+
+    - name: Run Tests (Spark ${{ matrix.spark-version }})
+      run: |
+        if [ "${{ matrix.spark-version }}" = "3.4" ]; then
+          mvn test -Pspark-3.4
+        else
+          mvn test
+        fi
+
+    - name: Upload Build Artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-artifacts-spark-${{ matrix.spark-version }}-java-${{ matrix.java-version }}
+        path: target/
+        retention-days: 5
+
+    - name: Upload Test Reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-reports-spark-${{ matrix.spark-version }}-java-${{ matrix.java-version }}
+        path: target/surefire-reports/
+        retention-days: 30
+
+  verify:
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+
+    steps:
+    - name: Check Build Status
+      run: |
+        if [ "${{ needs.build.result }}" != "success" ]; then
+          echo "Build did not succeed (result: ${{ needs.build.result }})"
+          exit 1
+        fi
+        echo "Build successful!"

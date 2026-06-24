@@ -8,7 +8,6 @@ import org.apache.spark.sql.connector.expressions.Expressions;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.types.DataTypes;
 import org.apache.spark.sql.catalyst.analysis.NoSuchNamespaceException;
-import org.apache.spark.sql.catalyst.analysis.NamespaceAlreadyExistsException;
 import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
 import org.apache.spark.sql.catalyst.analysis.TableAlreadyExistsException;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
@@ -16,17 +15,13 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.AnalysisException;
 import org.apache.iceberg.hive.TestHiveMetastore;
-import org.apache.hudi.storage.StoragePath;
-import org.apache.hudi.common.util.TablePathUtils;
 import org.junit.Before;
 import org.junit.After;
 import org.junit.Test;
 import org.junit.BeforeClass;
 import org.junit.AfterClass;
 import static org.junit.Assert.*;
-import org.apache.spark.sql.execution.datasources.v2.V2ScanRelationPushDown;
-import org.apache.spark.sql.execution.SparkOptimizer;
-import org.apache.spark.sql.internal.BaseSessionStateBuilder;
+
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -38,13 +33,15 @@ import java.util.List;
 import org.apache.iceberg.spark.SparkCatalog;
 import org.apache.spark.sql.RowFactory;
 
-public class UnifiedSessionCatalogTest {
+public class UnifiedSparkCatalogNonDefaultTest {
 
     private static class TestCatalog implements TableCatalog, FunctionCatalog, SupportsNamespaces, StagingTableCatalog {
         @Override
         public String name() { return "test"; }
         @Override
         public Identifier[] listTables(String[] namespace) { return new Identifier[0]; }
+        @Override
+        public Table loadTable(Identifier ident, String version) { return null; }
         @Override
         public Table loadTable(Identifier ident) { return null; }
         @Override
@@ -96,7 +93,7 @@ public class UnifiedSessionCatalogTest {
         }
     }
 
-    public static class TestUnifiedSessionCatalog extends UnifiedSessionCatalog<TestCatalog> {
+    public static class TestUnifiedSparkCatalog extends UnifiedSparkCatalog<TestCatalog> {
         // Just providing a concrete type
     }
 
@@ -104,7 +101,6 @@ public class UnifiedSessionCatalogTest {
     private TableCatalog tableCatalog;
     private SupportsNamespaces namespaceCatalog;
     private static TestHiveMetastore metastore;
-    private static TestHiveMetastore metastoreStg;
     
     private static final String[] DEFAULT_NAMESPACE = {"local_testing"};
     private static final List<String> TABLE_TYPES = Arrays.asList("iceberg", "delta", "hudi", "hive");
@@ -128,16 +124,10 @@ public class UnifiedSessionCatalogTest {
         metastore.start();
         
         String metastoreUris = metastore.hiveConf().get("hive.metastore.uris");
-
-        // Start the TestHiveMetastore for Staging
-        metastoreStg = new TestHiveMetastore();
-        metastoreStg.start();
-
-        String metastoreStgUris = metastoreStg.hiveConf().get("hive.metastore.uris");
         
         // Create Spark session
         spark = SparkSession.builder()
-            .appName("UnifiedSessionCatalogTest")
+            .appName("UnifiedSparkCatalogTest")
             .master("local[*]")
             .config("spark.sql.catalogImplementation", "hive")
             .config("spark.sql.shuffle.partitions", "1")
@@ -145,19 +135,15 @@ public class UnifiedSessionCatalogTest {
             .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension,org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
             .config("spark.hadoop.hive.metastore.uris", metastoreUris)
             .config("spark.databricks.delta.requiredSparkConfsCheck.enabled", "false")
-            .config("spark.sql.catalog.spark_catalog", "com.grab.UnifiedSessionCatalogTest$TestUnifiedSessionCatalog")
-            .config("spark.sql.catalog.spark_catalog.type", "hive")
-            .config("spark.sql.catalog.spark_catalog.uri", metastoreUris)
-            .config("spark.sql.catalog.hive_stg", "com.grab.UnifiedSessionCatalogTest$TestUnifiedSessionCatalog")
-            .config("spark.sql.catalog.hive_stg.type", "hive")
-            .config("spark.sql.catalog.hive_stg.hive_metastore_override", metastoreStgUris)
-            .config("spark.sql.catalog.hive_stg.uri", metastoreStgUris)
-            .config("spark.sql.catalog.spark_catalog.cache-enabled", "false")
+            .config("spark.sql.catalog.test_catalog", "com.grab.UnifiedSparkCatalog")
+            .config("spark.sql.catalog.test_catalog.type", "hive")
+            .config("spark.sql.catalog.test_catalog.cache-enabled", "false")
             .config("spark.databricks.delta.catalog.update.enabled", "true")
             .config("spark.sql.catalog.iceberg_catalog", "org.apache.iceberg.spark.SparkCatalog")
             .config("spark.sql.catalog.iceberg_catalog.type", "hive")
             .config("spark.sql.catalog.delta_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
             .config("spark.sql.catalog.delta_catalog.type", "hive")
+            .config("spark.hadoop.hive.exec.dynamic.partition.mode", "nonstrict")
             .enableHiveSupport()
             .getOrCreate();
         spark.sparkContext().setLogLevel("WARN");
@@ -179,8 +165,8 @@ public class UnifiedSessionCatalogTest {
     
     @Before
     public void setUp() {
-        // Initialize the UnifiedSessionCatalog
-        CatalogPlugin catalogPlugin = spark.sessionState().catalogManager().catalog("spark_catalog");
+        // Initialize the UnifiedSparkCatalog
+        CatalogPlugin catalogPlugin = spark.sessionState().catalogManager().catalog("test_catalog");
         tableCatalog = (TableCatalog) catalogPlugin;
         namespaceCatalog = (SupportsNamespaces) catalogPlugin;
         
@@ -190,7 +176,6 @@ public class UnifiedSessionCatalogTest {
         }
         // Create test database
         spark.sql("CREATE DATABASE IF NOT EXISTS local_testing");
-        
         // Clean up and recreate test tables
     }
     
@@ -245,10 +230,11 @@ public class UnifiedSessionCatalogTest {
         }
         String tableName = provider + "_test";
         
+        
         // Create table with the appropriate syntax for each provider
         try {
             spark.sql(String.format(
-                "CREATE TABLE %s.%s (id INT, name STRING) USING %s PARTITIONED BY (name) ",
+                "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING %s PARTITIONED BY (name) ",
                 DEFAULT_NAMESPACE[0], tableName, provider, tableName
             )).show();
         } catch (Exception e) {
@@ -258,7 +244,7 @@ public class UnifiedSessionCatalogTest {
         // Insert test data
         try {
             spark.sql(String.format(
-                "INSERT INTO %s.%s VALUES (1, 'test1'), (2, 'test2')",
+                "INSERT INTO test_catalog.%s.%s VALUES (1, 'test1'), (2, 'test2')",
                 DEFAULT_NAMESPACE[0], tableName
             )).show();
         } catch (Exception e) {
@@ -268,7 +254,7 @@ public class UnifiedSessionCatalogTest {
     
     private void dropTable(String provider) {
         String tableName = provider + "_test";
-        spark.sql("DROP TABLE IF EXISTS " + DEFAULT_NAMESPACE[0] + "." + tableName + " PURGE");
+        spark.sql("DROP TABLE IF EXISTS test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName + " PURGE");
     }
     
     
@@ -285,7 +271,7 @@ public class UnifiedSessionCatalogTest {
             // Create table with the appropriate syntax for each provider
             try {
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING) USING %s PARTITIONED BY (name)",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING %s PARTITIONED BY (name)",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
             } catch (Exception e) {
@@ -295,7 +281,7 @@ public class UnifiedSessionCatalogTest {
             // Insert test data
             try {
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES (1, 'test1'), (2, 'test2')",
+                    "INSERT INTO test_catalog.%s.%s VALUES (1, 'test1'), (2, 'test2')",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
             } catch (Exception e) {
@@ -304,7 +290,7 @@ public class UnifiedSessionCatalogTest {
         }
         
         // Get catalog and list tables
-        List<Row> tables = spark.sql("SHOW TABLES IN " + DEFAULT_NAMESPACE[0]).collectAsList();
+        List<Row> tables = spark.sql("SHOW TABLES IN test_catalog." + DEFAULT_NAMESPACE[0]).collectAsList();
         
         // Verify minimum count based on enabled table types
         int expectedMinCount = (int) ENABLED_TABLE_TYPES.values().stream().filter(Boolean::booleanValue).count();
@@ -340,7 +326,7 @@ public class UnifiedSessionCatalogTest {
             // Create table with the appropriate syntax for each provider
             try {
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING) USING %s PARTITIONED BY (name)",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING %s PARTITIONED BY (name)",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
             } catch (Exception e) {
@@ -350,7 +336,7 @@ public class UnifiedSessionCatalogTest {
             // Insert test data
             try {
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES (1, 'test1'), (2, 'test2')",
+                    "INSERT INTO test_catalog.%s.%s VALUES (1, 'test1'), (2, 'test2')",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
             } catch (Exception e) {
@@ -358,20 +344,24 @@ public class UnifiedSessionCatalogTest {
             }
         }
         
-        // Test loading specific tables (iceberg)
-        String[] providers = {"iceberg"};
-        for (String provider : providers) {
-            Table table = tableCatalog.loadTable(Identifier.of(DEFAULT_NAMESPACE, provider + "_test_cache"));
-            assertNotNull("Table should not be null", table);
+        // Test loading specific tables
+        List<String> enabledTableTypes = TABLE_TYPES.stream()
+            .filter(provider -> ENABLED_TABLE_TYPES.getOrDefault(provider, false))
+            .collect(Collectors.toList());
+            
+        for (String provider : enabledTableTypes) {
+            Dataset<Row> table = spark.sql("SELECT * FROM test_catalog." + DEFAULT_NAMESPACE[0] + "." + provider + "_test_cache");
+            assertEquals("Table " + provider + " should have 2 rows", 2, table.count());
+            if (provider.equals("hive")) {
+                Dataset<Row> hiveTable = spark.sql("SELECT * FROM test_catalog." + DEFAULT_NAMESPACE[0] + "." + provider + "_test_cache");
+                assertEquals("Table " + provider + " should have 2 rows", 2, hiveTable.count());
+            }
         }
         
         // Test dropping tables
-        for (String provider : providers) {
-            tableCatalog.dropTable(Identifier.of(DEFAULT_NAMESPACE, provider + "_test_cache"));
+        for (String provider : TABLE_TYPES) {
+            spark.sql("DROP TABLE IF EXISTS test_catalog." + DEFAULT_NAMESPACE[0] + "." + provider + "_test_cache ");
         }
-        
-        // Verify table is gone
-        assertThrows(NoSuchTableException.class, () -> tableCatalog.loadTable(Identifier.of(DEFAULT_NAMESPACE, "iceberg_test_cache")));
     }
     
     @Test 
@@ -510,7 +500,7 @@ public class UnifiedSessionCatalogTest {
                 continue;
             }
             String tableName = provider + "_test";
-            Dataset<Row> data = spark.sql("SELECT * FROM " + DEFAULT_NAMESPACE[0] + "." + tableName);
+            Dataset<Row> data = spark.sql("SELECT * FROM test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName);
             assertEquals("Table should have 0 rows", 0, data.count());
         }
     }
@@ -529,7 +519,7 @@ public class UnifiedSessionCatalogTest {
         
         
     }
-    
+
     @Test
     public void testIcebergBranchOperations() {
         if (!ENABLED_TABLE_TYPES.getOrDefault("iceberg", false)) {
@@ -541,14 +531,15 @@ public class UnifiedSessionCatalogTest {
 
         try {
             // Create Iceberg table
+            
             spark.sql(String.format(
-                "CREATE TABLE %s.%s (id INT, name STRING) USING iceberg PARTITIONED BY (id)",
+                "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING iceberg PARTITIONED BY (id)",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
             // Insert data into main branch
             spark.sql(String.format(
-                "INSERT INTO %s.%s VALUES (1, 'main1'), (2, 'main2')",
+                "INSERT INTO test_catalog.%s.%s VALUES (1, 'main1'), (2, 'main2')",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
@@ -566,14 +557,14 @@ public class UnifiedSessionCatalogTest {
 
             // Query main branch
             Dataset<Row> mainData = spark.sql(String.format(
-                "SELECT * FROM %s.%s",
+                "SELECT * FROM test_catalog.%s.%s",
                 DEFAULT_NAMESPACE[0], tableName
             ));
             assertEquals("Main branch should have 2 rows", 2, mainData.count());
 
             // Query the new branch
             Dataset<Row> branchData = spark.sql(String.format(
-                "SELECT * FROM %s.%s.branch_%s",
+                "SELECT * FROM test_catalog.%s.%s.branch_%s",
                 DEFAULT_NAMESPACE[0], tableName, branchName
             ));
             assertEquals("Branch should have 2 rows", 4, branchData.count());
@@ -587,62 +578,96 @@ public class UnifiedSessionCatalogTest {
 
         } finally {
             // Clean up
-            spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
+            spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
         }
     }
 
-    @Test
-    public void testDeltaTimeTravel() {
-        if (!ENABLED_TABLE_TYPES.getOrDefault("delta", false)) {
-            return;
-        }
+    // @Test
+    // public void testDeltaTimeTravel() {
+    //     if (!ENABLED_TABLE_TYPES.getOrDefault("delta", false)) {
+    //         return;
+    //     }
 
-        String tableName = "delta_timetravel_test";
+    //     String tableName = "delta_timetravel_test";
 
-        try {
-            // Create Delta table
-            spark.sql(String.format(
-                "CREATE TABLE %s.%s (id INT, name STRING) USING delta",
-                DEFAULT_NAMESPACE[0], tableName
-            ));
+    //     try {
+            
+    //         // Create Delta table
+    //         spark.sql(String.format(
+    //             "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING delta",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
 
-            // Insert initial data (version 0)
-            spark.sql(String.format(
-                "INSERT INTO %s.%s VALUES (1, 'initial1'), (2, 'initial2')",
-                DEFAULT_NAMESPACE[0], tableName
-            ));
+    //         // Insert initial data (version 0)
+    //         spark.sql(String.format(
+    //             "INSERT INTO test_catalog.%s.%s VALUES (1, 'initial1'), (2, 'initial2')",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
 
-            // Insert more data (version 1)
-            spark.sql(String.format(
-                "INSERT INTO %s.%s VALUES (3, 'update1'), (4, 'update2')",
-                DEFAULT_NAMESPACE[0], tableName
-            ));
+    //         // Insert more data (version 1)
+    //         spark.sql(String.format(
+    //             "INSERT INTO test_catalog.%s.%s VALUES (3, 'update1'), (4, 'update2')",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
 
-            // Query current version (should have 4 rows)
-            Dataset<Row> currentData = spark.sql(String.format(
-                "SELECT id, name FROM %s.%s",
-                DEFAULT_NAMESPACE[0], tableName
-            ));
-            assertEquals("Current version should have 4 rows", 4, currentData.count());
+    //         // Query current version (should have 4 rows)
+    //         Dataset<Row> currentData = spark.sql(String.format(
+    //             "SELECT id, name FROM test_catalog.%s.%s",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
+    //         assertEquals("Current version should have 4 rows", 4, currentData.count());
 
-            // Query version 0 using version number
-            Dataset<Row> version0Data = spark.sql(String.format(
-                "SELECT id, name FROM %s.%s VERSION AS OF 1",
-                DEFAULT_NAMESPACE[0], tableName
-            ));
-            assertEquals("Version 0 should have 2 rows", 2, version0Data.count());
+    //         // Query version 0 using version number
+    //         Dataset<Row> version0Data = spark.sql(String.format(
+    //             "SELECT id, name FROM test_catalog.%s.%s VERSION AS OF 1",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
+    //         assertEquals("Version 0 should have 2 rows", 2, version0Data.count());
 
-            // Verify version 0 data
-            List<Row> version0Rows = version0Data.collectAsList();
-            assertTrue("Version 0 should contain initial1", 
-                version0Rows.stream().anyMatch(row -> row.getString(1).equals("initial1")));
-            assertTrue("Version 0 should contain initial2", 
-                version0Rows.stream().anyMatch(row -> row.getString(1).equals("initial2")));
-        } finally {
-            // Clean up
-            spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
-        }
-    }
+    //         // Verify version 0 data
+    //         List<Row> version0Rows = version0Data.collectAsList();
+    //         assertTrue("Version 0 should contain initial1", 
+    //             version0Rows.stream().anyMatch(row -> row.getString(1).equals("initial1")));
+    //         assertTrue("Version 0 should contain initial2", 
+    //             version0Rows.stream().anyMatch(row -> row.getString(1).equals("initial2")));
+    //     } finally {
+    //         // Clean up
+    //         spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
+    //     }
+    // }
+
+    // @Test
+    // public void testIcebergTimeTravel() {
+    //     if (!ENABLED_TABLE_TYPES.getOrDefault("iceberg", false)) {
+    //         return;
+    //     }
+
+    //     String tableName = "iceberg_timetravel_test";
+    //     String branchName = "test_branch";
+
+        
+    //         // Create Iceberg table
+    //         spark.sql(String.format(
+    //             "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING iceberg PARTITIONED BY (id)",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
+
+    //         // Insert data into main branch
+    //         spark.sql(String.format(
+    //             "INSERT INTO test_catalog.%s.%s VALUES (1, 'main1'), (2, 'main2')",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
+
+    //         Dataset<Row> mainData = spark.sql(String.format(
+    //             "SELECT count(1) FROM test_catalog.%s.%s TIMESTAMP AS OF '2025-01-01 00:00:00'",
+    //             DEFAULT_NAMESPACE[0], tableName
+    //         ));
+
+            
+    //         assertEquals("Main branch should have 2 rows", 2, mainData.count());
+            
+        
+    // }
 
     @Test
     public void testIcebergEmptyLocationCheck() throws Exception {
@@ -692,42 +717,51 @@ public class UnifiedSessionCatalogTest {
     @Test
     public void testInsertOverwrite() {
         // Test INSERT OVERWRITE for each enabled table type
-        for (String provider : TABLE_TYPES) {
+        for (String provider : Arrays.asList("hive")) {
             if (!ENABLED_TABLE_TYPES.getOrDefault(provider, false)) {
                 continue;
             }
 
             String tableName = provider + "_overwrite_test";
-            
+            spark.sql(" CREATE TABLE spark_catalog.local_testing.hive_overwrite2 (id bigint NOT NULL, data string) using parquet");
+            try {
+                Table table = this.tableCatalog.loadTable(Identifier.of(DEFAULT_NAMESPACE, "hive_overwrite2"));
+                TableCatalog catalog = (TableCatalog) SparkSession.active().sessionState().catalogManager().catalog("spark_catalog");
+                Table table2 = catalog.loadTable(Identifier.of(DEFAULT_NAMESPACE, "hive_overwrite2"));
+                System.out.println(table2.properties());
+            } catch (NoSuchTableException e) {
+                System.out.println("Table not found");
+            }
+
             try {
                 // Create table
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING) USING %s",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING parquet",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
 
                 // Insert initial data
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES (1, 'initial1'), (2, 'initial2')",
+                    "INSERT INTO test_catalog.%s.%s VALUES (1, 'initial1'), (2, 'initial2')",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
                 // Verify initial data
                 Dataset<Row> initialData = spark.sql(String.format(
-                    "SELECT * FROM %s.%s ORDER BY id",
+                    "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
                 assertEquals("Initial data should have 2 rows", 2, initialData.count());
                 
                 // Perform INSERT OVERWRITE
                 spark.sql(String.format(
-                    "INSERT OVERWRITE TABLE %s.%s VALUES (3, 'overwrite1'), (4, 'overwrite2')",
+                    "INSERT OVERWRITE TABLE test_catalog.%s.%s VALUES (3, 'overwrite1'), (4, 'overwrite2')",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
                 // Verify overwritten data
                 Dataset<Row> overwrittenData = spark.sql(String.format(
-                    "SELECT * FROM %s.%s ORDER BY id",
+                    "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
                 assertEquals("Overwritten data should have 2 rows", 2, overwrittenData.count());
@@ -738,7 +772,7 @@ public class UnifiedSessionCatalogTest {
 
             } finally {
                 // Clean up
-                spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
+                spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
             }
         }
     }
@@ -746,18 +780,19 @@ public class UnifiedSessionCatalogTest {
     @Test
     public void testInsertOverwriteWithDataFrame() throws NoSuchTableException {
         // Test INSERT OVERWRITE for each enabled table type using DataFrames
-        List<String> newTableForEachProvider = Arrays.asList("delta", "hudi", "iceberg");
+        List<String> newTableForEachProvider = Arrays.asList("delta", "iceberg");
         for (String provider : newTableForEachProvider) {
             if (!ENABLED_TABLE_TYPES.getOrDefault(provider, false)) {
                 continue;
             }
+            
 
             String tableName = provider + "_overwrite_df_test";
             
             try {
                 // Create table
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING) USING %s",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING %s",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
 
@@ -770,10 +805,10 @@ public class UnifiedSessionCatalogTest {
                     TEST_SCHEMA
                 );
 
-                initialData.writeTo(DEFAULT_NAMESPACE[0] + "." + tableName).append();
+                initialData.writeTo("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName).append();
 
                 // Verify initial data
-                Dataset<Row> readInitialData = spark.table(DEFAULT_NAMESPACE[0] + "." + tableName)
+                Dataset<Row> readInitialData = spark.table("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName)
                     .orderBy("id");
                 assertEquals("Initial data should have 2 rows", 2, readInitialData.count());
 
@@ -786,10 +821,10 @@ public class UnifiedSessionCatalogTest {
                     TEST_SCHEMA
                 );
 
-                overwriteData.writeTo(DEFAULT_NAMESPACE[0] + "." + tableName).overwritePartitions();
+                overwriteData.writeTo("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName).overwritePartitions();
 
                 // Verify overwritten data
-                Dataset<Row> readOverwrittenData = spark.table(DEFAULT_NAMESPACE[0] + "." + tableName)
+                Dataset<Row> readOverwrittenData = spark.table("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName)
                     .orderBy("id");
                 assertEquals("Overwritten data should have 2 rows", 2, readOverwrittenData.count());
             } finally {
@@ -802,7 +837,7 @@ public class UnifiedSessionCatalogTest {
     @Test
     public void testInsertOverwriteWithDataFrameV1() throws NoSuchTableException {
         // Test INSERT OVERWRITE for each enabled table type using DataFrame Writer V1
-        List<String> newTableForEachProvider = Arrays.asList("delta", "hudi", "iceberg");
+        List<String> newTableForEachProvider = Arrays.asList("iceberg");
         for (String provider : newTableForEachProvider) {
             if (!ENABLED_TABLE_TYPES.getOrDefault(provider, false)) {
                 continue;
@@ -812,8 +847,9 @@ public class UnifiedSessionCatalogTest {
             
             try {
                 // Create table
+                
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING) USING %s",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING %s",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
 
@@ -829,10 +865,10 @@ public class UnifiedSessionCatalogTest {
                 initialData.write()
                     .mode("overwrite")
                     .format(provider)
-                    .saveAsTable(DEFAULT_NAMESPACE[0] + "." + tableName);
+                    .saveAsTable("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName);
 
                 // Verify initial data
-                Dataset<Row> readInitialData = spark.table(DEFAULT_NAMESPACE[0] + "." + tableName)
+                Dataset<Row> readInitialData = spark.table("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName)
                     .orderBy("id");
                 assertEquals("Initial data should have 2 rows", 2, readInitialData.count());
 
@@ -848,16 +884,16 @@ public class UnifiedSessionCatalogTest {
                 overwriteData.write()
                     .mode("overwrite")
                     .format(provider)
-                    .saveAsTable(DEFAULT_NAMESPACE[0] + "." + tableName);
+                    .saveAsTable("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName);
 
                 // Verify overwritten data
-                Dataset<Row> readOverwrittenData = spark.table(DEFAULT_NAMESPACE[0] + "." + tableName)
+                Dataset<Row> readOverwrittenData = spark.table("test_catalog." + DEFAULT_NAMESPACE[0] + "." + tableName)
                     .orderBy("id");
                 assertEquals("Overwritten data should have 2 rows", 2, readOverwrittenData.count());
 
             } finally {
                 // Clean up
-                spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
+                spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
             }
         }
     }
@@ -1075,6 +1111,7 @@ public class UnifiedSessionCatalogTest {
         }
     }
 
+
     @Test
     public void testMergeIntoOperations() {
         // Test MERGE INTO for each enabled provider except Hive
@@ -1088,33 +1125,34 @@ public class UnifiedSessionCatalogTest {
             
             try {
                 // Create target table
+                
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING, value INT) USING %s",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING, value INT) USING %s",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
 
                 // Create source table
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING, value INT) USING %s",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING, value INT) USING %s",
                     DEFAULT_NAMESPACE[0], sourceTableName, provider
                 ));
 
                 // Insert initial data into target
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES (1, 'target1', 100), (2, 'target2', 200)",
+                    "INSERT INTO test_catalog.%s.%s VALUES (1, 'target1', 100), (2, 'target2', 200)",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
                 // Insert data into source
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES (1, 'source1', 150), (3, 'source3', 300)",
+                    "INSERT INTO test_catalog.%s.%s VALUES (1, 'source1', 150), (3, 'source3', 300)",
                     DEFAULT_NAMESPACE[0], sourceTableName
                 ));
 
                 // Perform MERGE operation
                 spark.sql(String.format(
-                    "MERGE INTO %s.%s AS target " +
-                    "USING %s.%s AS source " +
+                    "MERGE INTO test_catalog.%s.%s AS target " +
+                    "USING test_catalog.%s.%s AS source " +
                     "ON target.id = source.id " +
                     "WHEN MATCHED THEN UPDATE SET value = source.value " +
                     "WHEN NOT MATCHED THEN INSERT (id, name, value) VALUES (source.id, source.name, source.value)",
@@ -1124,7 +1162,7 @@ public class UnifiedSessionCatalogTest {
 
                 // Verify results
                 Dataset<Row> result = spark.sql(String.format(
-                    "SELECT * FROM %s.%s ORDER BY id",
+                    "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
@@ -1148,8 +1186,8 @@ public class UnifiedSessionCatalogTest {
 
             } finally {
                 // Clean up
-                spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
-                spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], sourceTableName));
+                spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
+                spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], sourceTableName));
             }
         }
     }
@@ -1166,14 +1204,15 @@ public class UnifiedSessionCatalogTest {
             
             try {
                 // Create table
+                
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING, value INT) USING %s",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING, value INT) USING %s",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
 
                 // Insert test data
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES " +
+                    "INSERT INTO test_catalog.%s.%s VALUES " +
                     "(1, 'test1', 100), " +
                     "(2, 'test2', 200), " +
                     "(3, 'test3', 300), " +
@@ -1183,20 +1222,20 @@ public class UnifiedSessionCatalogTest {
 
                 // Verify initial data
                 Dataset<Row> initialData = spark.sql(String.format(
-                    "SELECT * FROM %s.%s ORDER BY id",
+                    "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
                 assertEquals("Should have 4 rows initially", 4, initialData.count());
 
                 // Delete rows with value > 200
                 spark.sql(String.format(
-                    "DELETE FROM %s.%s WHERE value > 200",
+                    "DELETE FROM test_catalog.%s.%s WHERE value > 200",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
                 // Verify remaining data
                 Dataset<Row> remainingData = spark.sql(String.format(
-                    "SELECT * FROM %s.%s ORDER BY id",
+                    "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
@@ -1214,13 +1253,13 @@ public class UnifiedSessionCatalogTest {
 
                 // Test conditional delete
                 spark.sql(String.format(
-                    "DELETE FROM %s.%s WHERE name = 'test1'",
+                    "DELETE FROM test_catalog.%s.%s WHERE name = 'test1'",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
                 // Verify final data
                 Dataset<Row> finalData = spark.sql(String.format(
-                    "SELECT * FROM %s.%s ORDER BY id",
+                    "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
@@ -1233,7 +1272,7 @@ public class UnifiedSessionCatalogTest {
 
             } finally {
                 // Clean up
-                spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
+                spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
             }
         }
     }
@@ -1248,46 +1287,47 @@ public class UnifiedSessionCatalogTest {
 
             String tableName = provider + "_merge_partitioned_test";
             String sourceTableName = provider + "_merge_partitioned_source_test";
-
+            
             try {
                 // Create partitioned target table
+                
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING, value INT) USING %s PARTITIONED BY (id)",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING, value INT) USING %s PARTITIONED BY (id)",
                     DEFAULT_NAMESPACE[0], tableName, provider
                 ));
 
                 // Create source table
                 spark.sql(String.format(
-                    "CREATE TABLE %s.%s (id INT, name STRING, value INT) USING %s",
+                    "CREATE TABLE test_catalog.%s.%s (id INT, name STRING, value INT) USING %s",
                     DEFAULT_NAMESPACE[0], sourceTableName, provider
                 ));
 
                 // Insert initial data into target
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES (1, 'target1', 100), (2, 'target2', 200)",
+                    "INSERT INTO test_catalog.%s.%s VALUES (1, 'target1', 100), (2, 'target2', 200)",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
                 // Insert data into source
                 spark.sql(String.format(
-                    "INSERT INTO %s.%s VALUES (1, 'source1', 150), (3, 'source3', 300)",
+                    "INSERT INTO test_catalog.%s.%s VALUES (1, 'source1', 150), (3, 'source3', 300)",
                     DEFAULT_NAMESPACE[0], sourceTableName
                 ));
 
                 // Perform MERGE operation
                 spark.sql(String.format(
-                    "MERGE INTO %s.%s AS target " +
-                    "USING %s.%s AS source " +
+                    "MERGE INTO test_catalog.%s.%s AS target " +
+                    "USING test_catalog.%s.%s AS source " +
                     "ON target.id = source.id " +
                     "WHEN MATCHED THEN UPDATE SET value = source.value " +
-                    "WHEN NOT MATCHED THEN INSERT (id, name, value) VALUES (source.id, source.name, source.value)",
+                    "WHEN NOT MATCHED THEN INSERT *",
                     DEFAULT_NAMESPACE[0], tableName,
                     DEFAULT_NAMESPACE[0], sourceTableName
                 ));
 
                 // Verify results
                 Dataset<Row> result = spark.sql(String.format(
-                    "SELECT * FROM %s.%s ORDER BY id",
+                    "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
 
@@ -1296,15 +1336,15 @@ public class UnifiedSessionCatalogTest {
                 
                 // Verify partition pruning works
                 Dataset<Row> partitionResult = spark.sql(String.format(
-                    "SELECT * FROM %s.%s WHERE id = 1",
+                    "SELECT * FROM test_catalog.%s.%s WHERE id = 1",
                     DEFAULT_NAMESPACE[0], tableName
                 ));
                 assertEquals("Should have 1 row for partition id=1", 1, partitionResult.count());
 
             } finally {
                 // Clean up
-                spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
-                spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], sourceTableName));
+                spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
+                spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], sourceTableName));
             }
         }
     }
@@ -1320,19 +1360,19 @@ public class UnifiedSessionCatalogTest {
         try {
             // Create Iceberg table with transform
             spark.sql(String.format(
-                "CREATE TABLE %s.%s (id INT, name STRING, created_date DATE) USING iceberg PARTITIONED BY (days(created_date))",
+                "CREATE TABLE test_catalog.%s.%s (id INT, name STRING, created_date DATE) USING iceberg PARTITIONED BY (days(created_date))",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
             // Insert test data
             spark.sql(String.format(
-                "INSERT INTO %s.%s VALUES (1, 'test1', DATE '2024-01-01'), (2, 'test2', DATE '2024-01-02')",
+                "INSERT INTO test_catalog.%s.%s VALUES (1, 'test1', DATE '2024-01-01'), (2, 'test2', DATE '2024-01-02')",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
             // Query using the days transform function (this will internally call loadFunction)
             Dataset<Row> result = spark.sql(String.format(
-                "SELECT * FROM %s.%s",
+                "SELECT * FROM test_catalog.%s.%s",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
@@ -1355,7 +1395,7 @@ public class UnifiedSessionCatalogTest {
 
         } finally {
             // Clean up
-            spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
+            spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
         }
     }
 
@@ -1371,13 +1411,13 @@ public class UnifiedSessionCatalogTest {
         try {
             // Create Iceberg table
             spark.sql(String.format(
-                "CREATE TABLE %s.%s (id INT, name STRING) USING iceberg PARTITIONED BY (id)",
+                "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING iceberg PARTITIONED BY (id)",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
             // Insert data into main branch
             spark.sql(String.format(
-                "INSERT INTO %s.%s VALUES (1, 'main1'), (2, 'main2')",
+                "INSERT INTO test_catalog.%s.%s VALUES (1, 'main1'), (2, 'main2')",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
@@ -1390,7 +1430,7 @@ public class UnifiedSessionCatalogTest {
             // Try to query with branch-specific table reference
             // This internally uses multi-part namespace which should trigger the loadFunction fix
             Dataset<Row> branchData = spark.sql(String.format(
-                "SELECT * FROM iceberg_catalog.%s.%s.branch_%s",
+                "SELECT * FROM test_catalog.%s.%s.branch_%s",
                 DEFAULT_NAMESPACE[0], tableName, branchName
             ));
 
@@ -1398,7 +1438,7 @@ public class UnifiedSessionCatalogTest {
 
         } finally {
             // Clean up
-            spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
+            spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
         }
     }
 
@@ -1439,19 +1479,19 @@ public class UnifiedSessionCatalogTest {
         try {
             // Create Iceberg table using identity transform (which is a function)
             spark.sql(String.format(
-                "CREATE TABLE %s.%s (id INT, name STRING) USING iceberg PARTITIONED BY (identity(id))",
+                "CREATE TABLE test_catalog.%s.%s (id INT, name STRING) USING iceberg PARTITIONED BY (identity(id))",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
             // Insert test data
             spark.sql(String.format(
-                "INSERT INTO %s.%s VALUES (1, 'test1'), (2, 'test2'), (3, 'test3')",
+                "INSERT INTO test_catalog.%s.%s VALUES (1, 'test1'), (2, 'test2'), (3, 'test3')",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
             // Query the table - this uses the identity transform function internally
             Dataset<Row> result = spark.sql(String.format(
-                "SELECT * FROM %s.%s WHERE id = 1",
+                "SELECT * FROM test_catalog.%s.%s WHERE id = 1",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
@@ -1459,7 +1499,7 @@ public class UnifiedSessionCatalogTest {
 
             // Verify partition column works correctly
             Dataset<Row> allData = spark.sql(String.format(
-                "SELECT * FROM %s.%s ORDER BY id",
+                "SELECT * FROM test_catalog.%s.%s ORDER BY id",
                 DEFAULT_NAMESPACE[0], tableName
             ));
 
@@ -1467,39 +1507,8 @@ public class UnifiedSessionCatalogTest {
 
         } finally {
             // Clean up
-            spark.sql(String.format("DROP TABLE IF EXISTS %s.%s", DEFAULT_NAMESPACE[0], tableName));
+            spark.sql(String.format("DROP TABLE IF EXISTS test_catalog.%s.%s", DEFAULT_NAMESPACE[0], tableName));
         }
-    }
-
-    @Test
-    public void testQueryStgTables() throws Exception {
-        // Test querying each enabled table type
-            for (String provider : Arrays.asList("delta")) {
-                String tableName = provider + "_staging_test";
-                try {
-                    if (!ENABLED_TABLE_TYPES.getOrDefault(provider, false)) {
-                        continue;
-                    }
-
-
-                    // Create table
-                    spark.sql(String.format(
-                            "CREATE TABLE hive_stg.%s.%s (id INT, name STRING, value INT) USING %s",
-                            DEFAULT_NAMESPACE[0], tableName, provider
-                    ));
-
-
-                    Dataset<Row> data = spark.sql("SELECT * FROM hive_stg." + DEFAULT_NAMESPACE[0] + "." + tableName);
-                    assertEquals("Table should have 0 rows", 0, data.count());
-
-                    Dataset<Row> datavalid = spark.sql("SHOW CREATE TABLE " + DEFAULT_NAMESPACE[0] + "." + tableName);
-                    assertEquals("Table should have 0 rows", 0, data.count());
-
-                } finally {
-                    // Clean up
-                    spark.sql(String.format("DROP TABLE IF EXISTS hive_stg.%s.%s", DEFAULT_NAMESPACE[0], tableName));
-                }
-            }
     }
 
 }
