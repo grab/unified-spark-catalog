@@ -42,7 +42,7 @@ public class UnifiedSparkCatalog <T extends TableCatalog & FunctionCatalog & Sup
     private TableCatalog hudiCatalog;
     T sessionCatalog;
     private CatalogPlugin rawDelegate; // Store the raw delegate for function catalog operations
-    private Logger logger = LogManager.getLogger(UnifiedSparkCatalog.class);
+    private static final Logger logger = LogManager.getLogger(UnifiedSparkCatalog.class);
     private LinkedHashMap<String, TableCatalog> catalogsByProvider;
     private CaseInsensitiveStringMap initializationOptions;
     private volatile boolean catalogsInitialized = false;

@@ -66,8 +66,8 @@ jobs:
     steps:
     - name: Check Build Status
       run: |
-        if [ "${{ needs.build.result }}" = "failure" ]; then
-          echo "Build failed for one or more Spark versions"
+        if [ "${{ needs.build.result }}" != "success" ]; then
+          echo "Build did not succeed (result: ${{ needs.build.result }})"
           exit 1
         fi
         echo "Build successful!"
