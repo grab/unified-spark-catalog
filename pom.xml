@@ -5,9 +5,13 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.grab</groupId>
-  <artifactId>spark-catalog</artifactId>
+  <!-- artifactId carries the Spark + Scala version, e.g. spark-catalog-3.5_2.12,
+       matching the Spark ecosystem convention (iceberg-spark-runtime-3.5_2.12).
+       Resolved per build profile via spark.version.suffix; flatten-maven-plugin
+       writes the resolved value into the published POM. -->
+  <artifactId>spark-catalog-${spark.version.suffix}_2.12</artifactId>
   <version>1.3.1</version>
-  <name>spark-catalog</name>
+  <name>spark-catalog-${spark.version.suffix}_2.12</name>
   <description>Unified Spark catalog for seamless access to multiple table formats</description>
   <url>https://github.com/grab/spark-catalog</url>
   <scm>
@@ -42,9 +46,13 @@
     <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
     
-    <!-- Default to Spark 3.5 -->
+    <!-- Default to Spark 3.5. Delta defaults live here too (not only in the
+         spark-3.5 profile) so the build still resolves when another profile
+         such as `release` deactivates the activeByDefault spark-3.5 profile. -->
     <spark.version>3.5.2</spark.version>
     <spark.version.suffix>3.5</spark.version.suffix>
+    <delta.version>3.3.0</delta.version>
+    <delta.artifact>delta-spark_2.12</delta.artifact>
     
     <!-- Core library versions -->
     <scala.version>2.12.18</scala.version>
@@ -58,6 +66,11 @@
     <!-- Plugin versions -->
     <scala.maven.plugin.version>4.8.1</scala.maven.plugin.version>
     <surefire.plugin.version>3.0.0-M7</surefire.plugin.version>
+    <flatten.plugin.version>1.7.0</flatten.plugin.version>
+    <source.plugin.version>3.4.0</source.plugin.version>
+    <javadoc.plugin.version>3.12.0</javadoc.plugin.version>
+    <gpg.plugin.version>3.2.8</gpg.plugin.version>
+    <central.plugin.version>0.11.0</central.plugin.version>
     
     <!-- Common JVM arguments for tests -->
     <test.jvm.args>--add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/sun.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/sun.security.action=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/javax.security.auth=ALL-UNNAMED --add-opens=java.base/javax.security.auth.login=ALL-UNNAMED --add-opens=java.base/javax.security.auth.spi=ALL-UNNAMED --add-opens=java.base/java.security=ALL-UNNAMED --add-opens=java.base/javax.security.auth.callback=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -Dhadoop.home.dir=/tmp -Dhadoop.root.logger=OFF,console -Djavax.security.auth.useSubjectCredsOnly=false -Djava.security.krb5.realm= -Djava.security.krb5.kdc= -Djdk.security.auth.subject.doPrivileged=true</test.jvm.args>
@@ -93,6 +106,86 @@
         <delta.version>3.3.0</delta.version>
         <delta.artifact>delta-spark_2.12</delta.artifact>
       </properties>
+    </profile>
+
+    <!-- Activate with `-Prelease` to publish to Maven Central via the Sonatype
+         Central Portal. Requires:
+           - GPG key available + MAVEN_GPG_PASSPHRASE for signing
+           - settings.xml server id `central` with the Central Portal user token
+         Run once per Spark profile, e.g.:
+           mvn -Prelease deploy                 # Spark 3.5 (default)
+           mvn -Prelease -Pspark-3.4 deploy     # Spark 3.4 -->
+    <profile>
+      <id>release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>${source.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals>
+                  <goal>jar-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>${javadoc.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <!-- Spark/Iceberg/Hudi sources trip strict doclint; don't fail the build on it. -->
+              <doclint>none</doclint>
+            </configuration>
+          </plugin>
+
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>${gpg.plugin.version}</version>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+            <configuration>
+              <gpgArguments>
+                <arg>--pinentry-mode</arg>
+                <arg>loopback</arg>
+              </gpgArguments>
+            </configuration>
+          </plugin>
+
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>${central.plugin.version}</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <!-- Validate + stage automatically; set to true to also release without
+                   a manual click in the Central Portal UI. -->
+              <autoPublish>false</autoPublish>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 
@@ -243,7 +336,34 @@
           <scalaVersion>${scala.version}</scalaVersion>
         </configuration>
       </plugin>
-      
+
+      <!-- Resolve ${spark.version.suffix} in the published POM's coordinates and
+           strip build-time-only sections, so consumers get clean GAV metadata. -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>flatten-maven-plugin</artifactId>
+        <version>${flatten.plugin.version}</version>
+        <configuration>
+          <flattenMode>oss</flattenMode>
+        </configuration>
+        <executions>
+          <execution>
+            <id>flatten</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>flatten</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>flatten-clean</id>
+            <phase>clean</phase>
+            <goals>
+              <goal>clean</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+
     </plugins>
   </build>
 </project>

@@ -1,6 +1,9 @@
 # Maven build output
 target/
 
+# flatten-maven-plugin generated POM
+.flattened-pom.xml
+
 # Metals (Scala IDE)
 .metals/
 .bloop/

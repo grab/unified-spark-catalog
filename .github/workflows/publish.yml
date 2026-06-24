@@ -1,0 +1,54 @@
+name: Publish to Maven Central
+
+# Publishes both Spark builds to Maven Central via the Sonatype Central Portal.
+# Triggered by pushing a version tag (e.g. v1.3.1), or manually.
+#
+# Required repository secrets:
+#   CENTRAL_TOKEN_USERNAME   Central Portal user token name
+#   CENTRAL_TOKEN_PASSWORD   Central Portal user token value
+#   GPG_PRIVATE_KEY          ASCII-armored GPG private key (full block)
+#   GPG_PASSPHRASE           passphrase for the GPG key
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      # Publish sequentially so the two deployments don't race in the Portal.
+      max-parallel: 1
+      matrix:
+        spark-version: ['3.4', '3.5']
+
+    name: Publish (Spark ${{ matrix.spark-version }})
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17 + Maven settings
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+          server-id: central
+          server-username: CENTRAL_TOKEN_USERNAME
+          server-password: CENTRAL_TOKEN_PASSWORD
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Deploy (Spark ${{ matrix.spark-version }})
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          if [ "${{ matrix.spark-version }}" = "3.4" ]; then
+            mvn -B -Prelease -Pspark-3.4 deploy -DskipTests
+          else
+            mvn -B -Prelease deploy -DskipTests
+          fi
