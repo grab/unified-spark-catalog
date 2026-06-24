@@ -35,7 +35,7 @@ public class TableTypeDetector {
     private static boolean isSupportedStoragePath(String path) {
         String[] supportedPrefixes = {"s3://", "s3a://", "file:/", "s3n://", "abfs://", "abfss://"};
         for (String prefix : supportedPrefixes) {
-            if (path.contains(prefix)) {
+            if (path.startsWith(prefix)) {
                 return true;
             }
         }
@@ -60,6 +60,6 @@ public class TableTypeDetector {
     }
 
     public static boolean isHudiTable(String provider) {
-        return provider.equals(HUDI_PROVIDER);
+        return provider.equalsIgnoreCase(HUDI_PROVIDER);
     }
 } 

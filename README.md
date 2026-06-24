@@ -4,7 +4,7 @@ A unified Spark catalog implementation that provides seamless access to multiple
 
 ## Overview
 
-The `UnifiedSessionCatalog` acts as an intelligent wrapper that automatically routes table operations to the appropriate underlying catalog based on table format detection. This approach is inspired by Trino's table redirection feature and enables users to work with mixed table formats in a single Spark session without format-specific syntax.
+The `UnifiedSparkCatalog` acts as an intelligent wrapper that automatically routes table operations to the appropriate underlying catalog based on table format detection. This approach is inspired by Trino's table redirection feature and enables users to work with mixed table formats in a single Spark session without format-specific syntax.
 
 ## Key Features
 
@@ -25,14 +25,14 @@ The `UnifiedSessionCatalog` acts as an intelligent wrapper that automatically ro
 
 ### 🔧 **Enterprise Features**
 - AWS S3 integration with proper IAM credential handling
-- Support for multiple Spark versions (3.3, 3.4, 3.5)
+- Support for multiple Spark versions (3.4, 3.5)
 - OpenLineage compatibility for data lineage tracking
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                  UnifiedSessionCatalog                      │
+│                  UnifiedSparkCatalog                      │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────┐        │
 │  │ Delta       │  │ Iceberg      │  │ Hudi        │        │
@@ -56,8 +56,8 @@ The `UnifiedSessionCatalog` acts as an intelligent wrapper that automatically ro
 
 ### Prerequisites
 
-- Java 11 or higher
-- Apache Spark 3.3, 3.4, or 3.5
+- Java 17 or higher
+- Apache Spark 3.4 or 3.5
 - Maven 3.6+
 
 ### Building from Source
@@ -71,9 +71,7 @@ cd spark-catalog
 mvn clean package
 
 # Build for specific Spark version
-mvn clean package -Pspark-3.3  # For Spark 3.3
 mvn clean package -Pspark-3.4  # For Spark 3.4
-mvn clean package -Pspark-3.5  # For Spark 3.5
 ```
 
 ### Maven Dependency
@@ -97,7 +95,7 @@ Configure your Spark session to use the unified catalog:
 ```scala
 val spark = SparkSession.builder()
   .appName("UnifiedCatalogExample")
-  .config("spark.sql.catalog.spark_catalog", "com.grab.UnifiedSessionCatalog")
+  .config("spark.sql.catalog.spark_catalog", "com.grab.UnifiedSparkCatalog")
   .config("spark.sql.extensions",
     "io.delta.sql.DeltaSparkSessionExtension," +
     "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions")
@@ -138,16 +136,8 @@ spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
 
 ### Catalog-Specific Settings
 
-```properties
-# Delta Lake
-spark.sql.catalog.spark_catalog.delta.enabled=true
-
-# Iceberg
-spark.sql.catalog.spark_catalog.iceberg.enabled=true
-
-# Hudi
-spark.sql.catalog.spark_catalog.hudi.enabled=true
-```
+The three format catalogs (Delta, Iceberg, Hudi) are enabled automatically when their
+respective JARs are present on the classpath. No additional enable flags are required.
 
 ## Testing
 
@@ -158,14 +148,13 @@ spark.sql.catalog.spark_catalog.hudi.enabled=true
 mvn test
 
 # Run tests for specific Spark version
-mvn test -Pspark-3.3
 mvn test -Pspark-3.4
 mvn test -Pspark-3.5
 
 # Run specific test suites
-mvn test -Dtest=UnifiedSessionCatalogTest
-mvn test -Dtest=UnifiedSessionCatalogBuiltInFunctionTest
-mvn test -Dtest=UnifiedSessionCatalogNonDefaultTest
+mvn test -Dtest=UnifiedSparkCatalogTest
+mvn test -Dtest=UnifiedSparkCatalogBuiltInFunctionTest
+mvn test -Dtest=UnifiedSparkCatalogNonDefaultTest
 ```
 
 ### Test Structure
@@ -180,7 +169,7 @@ mvn test -Dtest=UnifiedSessionCatalogNonDefaultTest
 **Key Features in This Release**:
 - ✅ **Unified Catalog**: Support for Delta Lake, Apache Iceberg, and Apache Hudi
 - ✅ **Format Detection**: Automatic table format detection and routing
-- ✅ **Multi-Spark Version Support**: Compatible with Spark 3.3, 3.4, and 3.5
+- ✅ **Multi-Spark Version Support**: Compatible with Spark 3.4 and 3.5
 - ✅ **Production Ready**: Thoroughly tested with enterprise table formats
 
 ## Development
@@ -190,17 +179,14 @@ mvn test -Dtest=UnifiedSessionCatalogNonDefaultTest
 ```
 src/
 ├── main/
-│   ├── java/com/grab/
-│   │   ├── UnifiedSessionCatalog.java       # Main unified catalog implementation
-│   │   └── TableTypeDetector.java           # Table format detection logic
-│   └── resources/
-│       └── META-INF/services/
-│           └── org.apache.spark.sql.SparkSessionExtensions
+│   └── java/com/grab/
+│       ├── UnifiedSparkCatalog.java       # Main unified catalog implementation
+│       └── TableTypeDetector.java           # Table format detection logic
 └── test/
     ├── java/com/grab/
-    │   ├── UnifiedSessionCatalogTest.java
-    │   ├── UnifiedSessionCatalogNonDefaultTest.java
-    │   └── UnifiedSessionCatalogBuiltInFunctionTest.java
+    │   ├── UnifiedSparkCatalogTest.java
+    │   ├── UnifiedSparkCatalogNonDefaultTest.java
+    │   └── UnifiedSparkCatalogBuiltInFunctionTest.java
     └── resources/
         └── java.security
 ```
@@ -209,7 +195,6 @@ src/
 
 | Spark Version | Status | Notes |
 |--------------|--------|-------|
-| 3.3.x | ✅ Supported | Stable |
 | 3.4.x | ✅ Supported | Stable |
 | 3.5.x | ✅ Supported | Default, Latest features |
 
