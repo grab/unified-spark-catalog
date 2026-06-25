@@ -43,8 +43,8 @@ inspired by Trino's table redirection.
 ## Build
 
 ```bash
-git clone https://github.com/grab/spark-catalog.git
-cd spark-catalog
+git clone https://github.com/grab/unified-spark-catalog.git
+cd unified-spark-catalog
 
 mvn clean package              # Spark 3.5 (default)
 mvn clean package -Pspark-3.4  # Spark 3.4
@@ -57,7 +57,7 @@ The artifactId carries the Spark version (Spark ecosystem convention):
 ```xml
 <dependency>
   <groupId>com.grab</groupId>
-  <artifactId>spark-catalog-3.5_2.12</artifactId>  <!-- or spark-catalog-3.4_2.12 -->
+  <artifactId>unified-spark-catalog-3.5_2.12</artifactId>  <!-- or unified-spark-catalog-3.4_2.12 -->
   <version>1.3.1</version>
 </dependency>
 ```

@@ -10,7 +10,7 @@ not maintained.
 Please **do not** open a public GitHub issue for security vulnerabilities.
 
 Instead, report them privately by opening a
-[GitHub security advisory](https://github.com/grab/spark-catalog/security/advisories/new)
+[GitHub security advisory](https://github.com/grab/unified-spark-catalog/security/advisories/new)
 on this repository. Include:
 
 - A description of the vulnerability and its impact.
