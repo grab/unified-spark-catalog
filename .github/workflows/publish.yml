@@ -1,7 +1,7 @@
 name: Publish to Maven Central
 
 # Publishes both Spark builds to Maven Central via the Sonatype Central Portal.
-# Triggered by pushing a version tag (e.g. v1.3.1), or manually.
+# Triggered by pushing a version tag (e.g. v1.0.0), or manually.
 #
 # Required repository secrets:
 #   CENTRAL_TOKEN_USERNAME   Central Portal user token name
@@ -47,8 +47,16 @@ jobs:
           CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
         run: |
-          if [ "${{ matrix.spark-version }}" = "3.4" ]; then
-            mvn -B -Prelease -Pspark-3.4 deploy -DskipTests
+          # Tag push -> release version from tag + auto-publish.
+          # Manual dispatch -> pom default version, stage only (manual publish in Portal).
+          EXTRA=()
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            EXTRA+=("-Drevision=${GITHUB_REF_NAME#v}" "-Dcentral.autoPublish=true")
           else
-            mvn -B -Prelease deploy -DskipTests
+            EXTRA+=("-Dcentral.autoPublish=false")
+          fi
+          if [ "${{ matrix.spark-version }}" = "3.4" ]; then
+            mvn -B -Prelease -Pspark-3.4 deploy -DskipTests "${EXTRA[@]}"
+          else
+            mvn -B -Prelease deploy -DskipTests "${EXTRA[@]}"
           fi
