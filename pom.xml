@@ -10,7 +10,7 @@
        Resolved per build profile via spark.version.suffix; flatten-maven-plugin
        writes the resolved value into the published POM. -->
   <artifactId>unified-spark-catalog-${spark.version.suffix}_2.12</artifactId>
-  <version>0.1.0</version>
+  <version>${revision}</version>
   <name>unified-spark-catalog-${spark.version.suffix}_2.12</name>
   <description>Unified Spark catalog for seamless access to multiple table formats</description>
   <url>https://github.com/grab/unified-spark-catalog</url>
@@ -45,7 +45,14 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.source>17</maven.compiler.source>
     <maven.compiler.target>17</maven.compiler.target>
-    
+
+    <!-- Project version. Overridable at release time via `-Drevision=X.Y.Z` (set from the
+         git tag in CI). The flatten plugin resolves ${revision} in the published POM. -->
+    <revision>0.1.0</revision>
+    <!-- Central Portal auto-release. Default false = upload + stage (manual publish).
+         CI sets -Dcentral.autoPublish=true on tag pushes to release automatically. -->
+    <central.autoPublish>false</central.autoPublish>
+
     <!-- Default to Spark 3.5. Delta defaults live here too (not only in the
          spark-3.5 profile) so the build still resolves when another profile
          such as `release` deactivates the activeByDefault spark-3.5 profile. -->
@@ -179,9 +186,12 @@
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>
-              <!-- Validate + stage automatically; set to true to also release without
-                   a manual click in the Central Portal UI. -->
-              <autoPublish>false</autoPublish>
+              <!-- Validate + stage automatically; set -Dcentral.autoPublish=true to also
+                   release without a manual click in the Central Portal UI. -->
+              <autoPublish>${central.autoPublish}</autoPublish>
+              <!-- When auto-publishing, block until the Portal confirms PUBLISHED so a
+                   validation failure fails the CI job instead of hanging silently. -->
+              <waitUntil>published</waitUntil>
             </configuration>
           </plugin>
         </plugins>
